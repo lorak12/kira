@@ -1,0 +1,13 @@
+{
+  "extends": "@electron-toolkit/tsconfig/tsconfig.node.json",
+  "include": ["src/main/**/*.test.ts", "test/**/*"],
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "electron": ["./test/mocks/electron.ts"],
+      "@shared/*": ["./src/shared/*"]
+    }
+  }
+}

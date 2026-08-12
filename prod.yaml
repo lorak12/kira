@@ -1,0 +1,127 @@
+# =============================================================================
+# Production/Custom wake-word config — Kira (Polish) via VoxCPM2
+# =============================================================================
+#
+# Install:   uv sync --extra train --extra voxcpm
+# Prefetch:  livekit-wakeword setup --config configs/kira_pl_voxcpm.yaml
+# Pipeline:  livekit-wakeword run configs/kira_pl_voxcpm.yaml
+# =============================================================================
+
+model_name: kira_pl_voxcpm
+
+target_phrases:
+  - "kira"
+  - "hej kira"
+
+# =============================================================================
+# Data generation
+# =============================================================================
+
+tts_backend: voxcpm
+
+# --- DATASET SCALE ---
+# For a quick initial test, reduce n_samples to 2000 and n_samples_val to 400.
+# For production-grade accuracy, keep these higher values (requires good GPU).
+n_samples: 15000
+n_samples_val: 3000
+
+n_background_samples: 2000
+n_background_samples_val: 500
+tts_batch_size: 50
+
+# Polish phonetics false friends & conversational distractors
+custom_negative_phrases:
+  - "kila"
+  - "kora"
+  - "kura"
+  - "gira"
+  - "syra"
+  - "giera"
+  - "lira"
+  - "mira"
+  - "pyra"
+  - "kara"
+  - "pora"
+  - "tyra"
+  - "ikra"
+  - "kra"
+  - "kima"
+  - "kilka"
+  - "kier"
+  - "kibel"
+  - "bira"
+  - "pila"
+  - "piła"
+  - "siła"
+  - "mila"
+  - "hej"
+  - "okej"
+  - "heja"
+  - "kieruj"
+  - "kiedy"
+  - "która"
+  - "ktora"
+
+# Kept for schema parity
+noise_scales: [0.98]
+noise_scale_ws: [0.98]
+length_scales: [0.75, 1.0, 1.25]
+slerp_weights: [0.2, 0.35, 0.5, 0.65, 0.8]
+
+# =============================================================================
+# voxcpm_tts settings
+# =============================================================================
+voxcpm_tts:
+  model_id: openbmb/VoxCPM2
+  model_cache_relpath: voxcpm/VoxCPM2
+  local_model_path: null
+  load_denoiser: false
+  cfg_values: [1.5, 2.0, 2.5, 3.0]
+  inference_timesteps_list: [8, 10, 12]
+  # Descriptions adjusted to bias VoxCPM2 towards Polish-accented voices
+  voice_design_prompts:
+    - "A young adult Polish woman, clear mid-pitch voice, natural Polish accent, friendly"
+    - "A young adult Polish man, warm baritone, steady pace, friendly and articulate Polish speaker"
+    - "Młoda polska kobieta, wyraźny i spokojny głos, naturalne tempo"
+    - "Młody polski mężczyzna, głęboki bas, czysty i wyraźny polski akcent"
+    - "A middle-aged Polish woman, slightly low pitch, confident tone, Polish accent"
+    - "A middle-aged Polish man, deep resonant voice, slow deliberate pace"
+    - "Starsza kobieta, łagodny i ciepły głos, spokojne tempo mówienia"
+    - "An older adult Polish man, warm tenor, moderate pace, speaking Polish"
+    - "A young Polish woman, bright energetic tone, slightly faster pace"
+    - "A young Polish man, light tenor, quick conversational Polish pace"
+    - "Kobieta w średnim wieku, niski i poważny głos, polski akcent"
+    - "Mężczyzna w średnim wieku, spokojny i profesjonalny ton głosu"
+
+# =============================================================================
+# Paths
+# =============================================================================
+data_dir: ./data
+output_dir: ./output
+
+# =============================================================================
+# Augmentation & Training
+# =============================================================================
+augmentation:
+  clip_duration: 2.0
+  batch_size: 16
+  rounds: 3
+  background_paths: [./data/backgrounds]
+  rir_paths: [./data/rirs]
+
+model:
+  model_type: conv_attention
+  model_size: medium
+
+steps: 80000          # Reduce to 10000 or 20000 if running a quick test setup
+learning_rate: 0.0001
+weight_decay: 0.01
+label_smoothing: 0.05
+max_negative_weight: 3000
+target_fp_per_hour: 0.1
+
+batch_n_per_class:
+  positive: 50
+  adversarial_negative: 50
+  ACAV100M_sample: 1024
+  background_noise: 50

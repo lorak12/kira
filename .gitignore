@@ -1,0 +1,22 @@
+node_modules/
+out/
+dist/
+build/
+kira.config.json
+.env
+resources/models/*.ppn
+*.log
+logs/
+
+# electron-vite/tsc build caches
+*.tsbuildinfo
+
+# python envs (pySidecar's runtime venv + the root one used by the
+# wake-word training scripts in configs/*.yaml) and bytecode caches
+**/.venv/
+**/__pycache__/
+
+# wake-word training data + generated datasets (huge, regenerable from
+# configs/*.yaml via livekit-wakeword) -- not source, don't belong in git
+data/
+output/

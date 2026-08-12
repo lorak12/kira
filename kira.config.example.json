@@ -1,0 +1,84 @@
+{
+  "wakeWord": {
+    "modelPath": "resources/models/kira.onnx",
+    "muteModelPath": "resources/models/mute.onnx",
+    "threshold": 0.5
+  },
+  "sidecar": {
+    "port": 8765,
+    "pythonPath": "python"
+  },
+  "bargeIn": {
+    "enabled": false,
+    "rmsThreshold": 1200,
+    "minSpeechMs": 400
+  },
+  "stt": {
+    "engine": "local-whisper",
+    "language": "en",
+    "localWhisper": {
+      "modelSize": "small"
+    },
+    "groq": {
+      "apiKey": "YOUR_GROQ_API_KEY"
+    }
+  },
+  "llm": {
+    "openRouterApiKey": "YOUR_OPENROUTER_API_KEY",
+    "model": "deepseek/deepseek-v4-flash",
+    "fallbackModel": "google/gemini-3.1-flash-lite"
+  },
+  "tts": {
+    "engine": "edge",
+    "elevenLabsApiKey": "YOUR_ELEVENLABS_API_KEY",
+    "voiceId": "YOUR_ELEVENLABS_VOICE_ID",
+    "model": "eleven_multilingual_v2",
+    "voiceSettings": {
+      "stability": 0.5,
+      "similarityBoost": 0.75,
+      "speed": 1.0
+    },
+    "edge": {
+      "voices": {
+        "pl": "pl-PL-ZofiaNeural",
+        "en": "en-US-JennyNeural",
+        "default": "en-US-JennyNeural"
+      },
+      "prosody": {
+        "rate": "+0%",
+        "pitch": "+0st",
+        "volume": "+0%"
+      }
+    }
+  },
+  "overlay": {
+    "style": "full",
+    "accentColor": "#8b5cf6"
+  },
+  "hotkeys": {
+    "mute": "CommandOrControl+Shift+M",
+    "dismiss": "Control+Alt+K"
+  },
+  "assistant": {
+    "defaultLanguage": "en",
+    "wit": "medium",
+    "verbosity": "normal",
+    "alwaysConfirm": false,
+    "extraGreetings": {
+      "en": []
+    },
+    "maxAgentSteps": 5,
+    "backgroundThresholdMs": 1500,
+    "maxHistoryMessages": 40
+  },
+  "tools": {
+    "disabled": []
+  },
+  "projects": [
+    {
+      "name": "example-project",
+      "path": "C:/path/to/your/project",
+      "editorCommand": "code"
+    }
+  ]
+}
