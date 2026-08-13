@@ -1,28 +1,35 @@
 # Supervisor for running Kira in the background, forever.
 #
 # Launched at Windows logon by the "Kira" scheduled task (see
-# scripts/install-startup.ps1) with its window hidden. Kira herself has no
-# console/taskbar presence either (frame:false, skipTaskbar:true overlay
-# window) -- the only thing on screen is the overlay orb.
+# scripts/install-startup.ps1, via run-kira-hidden.vbs) with zero window.
+# Kira herself has no console/taskbar presence either (frame:false,
+# skipTaskbar:true overlay window) -- the only thing on screen is the
+# overlay orb.
 #
-# Runs `out/main/index.js` directly under electron.exe rather than `npm
-# start`, so a launch failure is Kira's own exit code, not npm's wrapper
-# noise. Restarts on ANY exit (crash, uncaught error, config problem, even a
-# clean quit) since Kira is meant to just always be there -- there's no
-# "intentional quit" path in the app today (the overlay window isn't
-# closable). To actually stop her, stop/disable the "Kira" scheduled task
-# (or kill this script's powershell.exe + the electron.exe it spawned).
+# Runs electron.exe directly rather than `npm start`, so a launch failure is
+# Kira's own exit code, not npm's wrapper noise. Restarts on ANY exit (crash,
+# uncaught error, config problem, even a clean quit) since Kira is meant to
+# just always be there -- there's no "intentional quit" path in the app today
+# (the overlay window isn't closable). To actually stop her, stop/disable the
+# "Kira" scheduled task (or kill this script's powershell.exe + the
+# electron.exe it spawned).
 #
 # A crash loop (e.g. a bad config change) still backs off instead of
 # hammering the machine: each restart waits a few seconds, and if she dies
 # fast and repeatedly the wait grows, capped at 2 minutes.
 
-$ErrorActionPreference = 'Stop'
-
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$electron = Join-Path $repoRoot 'node_modules\.bin\electron.cmd'
+# node_modules\.bin\electron.cmd is a shim: it runs node.exe on electron\cli.js,
+# which itself spawns the *real* electron.exe as a child process without
+# windowsHide -- that's two extra console-subsystem processes (node.exe, and
+# the console window it pops for the electron.exe child) sitting between the
+# supervisor and Kira. Calling the real electron.exe directly cuts both
+# extra hops out.
+$electron = Join-Path $repoRoot 'node_modules\electron\dist\electron.exe'
 $logDir = Join-Path $repoRoot 'logs'
 $logFile = Join-Path $logDir 'kira.log'
+$stdoutFile = Join-Path $logDir 'kira.out.tmp.log'
+$stderrFile = Join-Path $logDir 'kira.err.tmp.log'
 
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
@@ -43,20 +50,55 @@ while ($true) {
   $startedAt = Get-Date
   Add-Content -Path $logFile -Value "`n===== [$($startedAt.ToString('o'))] starting Kira ====="
 
-  # Pass the repo root (not out\main\index.js directly) so Electron reads
-  # package.json's "name": "kira" and app.getName() comes out "kira" --
-  # pointing electron.exe straight at a .js file instead leaves the app name
-  # at the default "Electron", which puts userData (and so the single-
-  # instance lock and its IPC pipe) in a different folder than a normal
-  # `npm run dev`/`npm start` launch. That would let this supervised copy
-  # and a manually-started one run side by side fighting over the mic
-  # instead of the second one deferring to the first.
-  Push-Location $repoRoot
+  # Start-Process -RedirectStandardOutput/-RedirectStandardError does real
+  # OS-level file redirection, unlike the previous attempt here (a manual
+  # System.Diagnostics.Process with Register-ObjectEvent callbacks): those
+  # callbacks only fire when PowerShell's engine is idle between statements,
+  # NOT while blocked inside a raw .NET WaitForExit() call -- so every line
+  # Kira and the sidecar ever logged was silently getting dropped, the whole
+  # time this looked like it was working. Start-Process -Wait has no such
+  # gap. Two separate files (stdout/stderr) because Start-Process can't
+  # redirect both to the same one; merged into the real log by timestamp
+  # below since every line from logger.ts's log()/logError() already carries
+  # one.
+  if (Test-Path $stdoutFile) { Remove-Item $stdoutFile -Force }
+  if (Test-Path $stderrFile) { Remove-Item $stderrFile -Force }
+
   try {
-    & $electron $repoRoot *>> $logFile
-    $exitCode = $LASTEXITCODE
-  } finally {
-    Pop-Location
+    $proc = Start-Process -FilePath $electron -ArgumentList "`"$repoRoot`"" `
+      -WorkingDirectory $repoRoot -NoNewWindow -PassThru `
+      -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
+
+    # Tail both temp files into the real log every couple seconds WHILE Kira
+    # runs (not just once she exits) -- a background service you can only
+    # read the log of after it dies isn't useful for live diagnosis. Each
+    # line already carries its own timestamp (logger.ts's log()/logError()),
+    # so appending stdout/stderr in whatever order they were last read in is
+    # fine; a reader sorts/skims by that timestamp, not file order.
+    $stdoutPos = 0
+    $stderrPos = 0
+    function Flush-NewLines([string]$path, [ref]$pos) {
+      if (-not (Test-Path $path)) { return }
+      $lines = Get-Content $path -ErrorAction SilentlyContinue
+      if ($null -eq $lines) { return }
+      if ($lines -isnot [array]) { $lines = @($lines) }
+      if ($lines.Count -gt $pos.Value) {
+        $lines[$pos.Value..($lines.Count - 1)] | Add-Content -Path $logFile
+        $pos.Value = $lines.Count
+      }
+    }
+
+    while (-not $proc.HasExited) {
+      Start-Sleep -Seconds 2
+      Flush-NewLines $stdoutFile ([ref]$stdoutPos)
+      Flush-NewLines $stderrFile ([ref]$stderrPos)
+    }
+    Flush-NewLines $stdoutFile ([ref]$stdoutPos)
+    Flush-NewLines $stderrFile ([ref]$stderrPos)
+    $exitCode = $proc.ExitCode
+  } catch {
+    Add-Content -Path $logFile -Value "===== launch error: $($_.Exception.Message) ====="
+    $exitCode = -1
   }
 
   $ranFor = (Get-Date) - $startedAt

@@ -1,0 +1,11 @@
+# API keys
+.env
+
+# Your voice recordings and generated reports -- personal, not project content
+clips/*.wav
+clips/*.txt
+results/*.json
+results/*.csv
+results/report.html
+!clips/.gitkeep
+!results/.gitkeep

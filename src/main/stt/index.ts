@@ -13,5 +13,5 @@ export function createSttEngine(config: KiraConfig): SttEngine | null {
   if (!apiKey) {
     throw new Error('stt.engine is "groq" but stt.groq.apiKey is not set in kira.config.json')
   }
-  return new GroqWhisperEngine(apiKey, config.stt.language)
+  return new GroqWhisperEngine(apiKey, config.stt.language, config.stt.groq?.model)
 }

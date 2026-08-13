@@ -98,6 +98,24 @@ export function createOverlayWindow(accentColor: string): BrowserWindow {
 
   // Critical: showInactive() never steals OS focus from the user's active window.
   overlayWindow.showInactive()
+  // Re-assert topmost right after the first show. Electron/Windows has a
+  // known quirk where a setAlwaysOnTop() called before a window's first
+  // show doesn't reliably stick in the OS z-order once other topmost
+  // windows (taskbar, other apps' own always-on-top overlays) show up
+  // later -- without this, Kira's orb silently ends up underneath normal
+  // windows despite the flag being "set".
+  overlayWindow.setAlwaysOnTop(true, 'screen-saver')
+
+  // Belt-and-suspenders: Windows lets other apps grab topmost status after
+  // Kira does (e.g. anything that also calls SetWindowPos HWND_TOPMOST),
+  // which silently buries the overlay with no event Electron surfaces for
+  // "you got un-topmost'd". Periodically re-assert instead of chasing every
+  // possible culprit.
+  setInterval(() => {
+    if (overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible()) {
+      overlayWindow.setAlwaysOnTop(true, 'screen-saver')
+    }
+  }, 3000)
 
   return overlayWindow
 }
@@ -119,6 +137,7 @@ export function showOverlay(): void {
   // showInactive(), not show() -- same reasoning as the initial reveal in
   // createOverlayWindow: never steal OS focus from the user's active window.
   overlayWindow?.showInactive()
+  overlayWindow?.setAlwaysOnTop(true, 'screen-saver')
 }
 
 export function isOverlayVisible(): boolean {

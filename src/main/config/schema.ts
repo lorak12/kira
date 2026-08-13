@@ -49,7 +49,12 @@ export const configSchema = z.object({
       .default({ modelSize: 'small' }),
     groq: z
       .object({
-        apiKey: z.string().optional()
+        apiKey: z.string().optional(),
+        // turbo is ~2x faster than large-v3 with no visible accuracy loss on
+        // short commands in testing (see scripts/stt-bench/) -- large-v3
+        // stays selectable for anyone who wants the marginally more
+        // conservative model.
+        model: z.enum(['whisper-large-v3', 'whisper-large-v3-turbo']).default('whisper-large-v3-turbo')
       })
       .optional()
   }),

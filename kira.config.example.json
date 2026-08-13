@@ -20,7 +20,8 @@
       "modelSize": "small"
     },
     "groq": {
-      "apiKey": "YOUR_GROQ_API_KEY"
+      "apiKey": "YOUR_GROQ_API_KEY",
+      "model": "whisper-large-v3-turbo"
     }
   },
   "llm": {

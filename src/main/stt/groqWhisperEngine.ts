@@ -8,13 +8,14 @@ import type { SttEngine, TranscriptResult } from './SttEngine'
 export class GroqWhisperEngine implements SttEngine {
   constructor(
     private apiKey: string,
-    private language?: string
+    private language?: string,
+    private model: string = 'whisper-large-v3-turbo'
   ) {}
 
   async transcribe(wavBuffer: Buffer, signal?: AbortSignal): Promise<TranscriptResult> {
     const form = new FormData()
     form.append('file', new Blob([new Uint8Array(wavBuffer)], { type: 'audio/wav' }), 'utterance.wav')
-    form.append('model', 'whisper-large-v3')
+    form.append('model', this.model)
     if (this.language) form.append('language', this.language)
 
     const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {

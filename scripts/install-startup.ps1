@@ -13,11 +13,17 @@
 $ErrorActionPreference = 'Stop'
 $taskName = 'Kira'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$runnerScript = Join-Path $PSScriptRoot 'run-kira.ps1'
+$vbsLauncher = Join-Path $PSScriptRoot 'run-kira-hidden.vbs'
 
+# Runs via wscript.exe -> run-kira-hidden.vbs -> WScript.Shell.Run(..., 0,
+# False) rather than powershell.exe -WindowStyle Hidden directly. Windows
+# 11's default-terminal-application feature hosts ANY console app launch
+# (Task Scheduler included) inside a visible Windows Terminal window, and
+# -WindowStyle Hidden doesn't suppress that delegation -- only
+# WScript.Shell.Run's window-style parameter does. See run-kira-hidden.vbs.
 $action = New-ScheduledTaskAction `
-  -Execute 'powershell.exe' `
-  -Argument "-NoLogo -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runnerScript`""
+  -Execute 'wscript.exe' `
+  -Argument "`"$vbsLauncher`""
 
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 

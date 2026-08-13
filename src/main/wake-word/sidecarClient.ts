@@ -74,7 +74,11 @@ export class SidecarClient extends EventEmitter {
     }
 
     const pythonPath = resolveFromAppRoot(this.config.sidecar.pythonPath)
-    this.process = spawn(pythonPath, args, { cwd: sidecarDir })
+    // windowsHide: true -- without it, python.exe (a console subsystem exe)
+    // pops a visible cmd window on Windows every time the sidecar spawns,
+    // which is exactly what shows up as a stray terminal when Kira launches
+    // at logon. Doesn't affect stdout/stderr piping below.
+    this.process = spawn(pythonPath, args, { cwd: sidecarDir, windowsHide: true })
 
     this.process.stdout.on('data', (d) => process.stdout.write(`[sidecar:out] ${d}`))
     this.process.stderr.on('data', (d) => process.stderr.write(`[sidecar] ${d}`))

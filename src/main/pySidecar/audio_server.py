@@ -47,6 +47,26 @@ def log(*args):
     print(f"[{ts}]", "[sidecar]", *args, file=sys.stderr, flush=True)
 
 
+def _add_cuda_dll_dirs():
+    # faster-whisper/ctranslate2's GPU path needs cuBLAS + cuDNN DLLs on
+    # Windows. Rather than requiring a system-wide CUDA Toolkit install, we
+    # pip-install the redistributable nvidia-cublas-cu12/nvidia-cudnn-cu12
+    # wheels into this venv (see requirements.txt) -- but pip-installed
+    # packages don't get their bin/ folders added to the DLL search path
+    # automatically, so ctranslate2 can't find them without this.
+    import os
+    import site
+
+    for base in site.getsitepackages():
+        for sub in ("nvidia/cublas/bin", "nvidia/cudnn/bin"):
+            path = os.path.join(base, *sub.split("/"))
+            if os.path.isdir(path):
+                try:
+                    os.add_dll_directory(path)
+                except (AttributeError, OSError):
+                    pass  # add_dll_directory is Windows/Python 3.8+ only
+
+
 def pcm_to_wav_bytes(pcm: np.ndarray, sample_rate: int = SAMPLE_RATE) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
@@ -99,7 +119,17 @@ class AudioSidecar:
     def _load_whisper_model(self):
         from faster_whisper import WhisperModel
 
-        log(f"loading faster-whisper model size={self.args.whisper_model_size}")
+        _add_cuda_dll_dirs()
+        log(f"loading faster-whisper model size={self.args.whisper_model_size}, trying GPU first")
+        try:
+            model = WhisperModel(self.args.whisper_model_size, device="cuda", compute_type="float16")
+            log("faster-whisper running on GPU (cuda/float16)")
+            return model
+        except Exception as e:
+            # Falls back rather than crashing the sidecar -- no GPU, a
+            # missing/mismatched driver, or a DLL problem shouldn't take
+            # down voice input entirely when CPU still works, just slower.
+            log(f"GPU load failed ({e}), falling back to CPU (int8)")
         return WhisperModel(self.args.whisper_model_size, device="cpu", compute_type="int8")
 
     # -- audio input --------------------------------------------------
@@ -246,8 +276,12 @@ class AudioSidecar:
             # that language instead of guessing wrong ones like Russian for
             # Polish speech.
             t0 = time.monotonic()
+            # beam_size=1 (greedy decoding) instead of the default 5 -- for
+            # short voice-assistant commands the accuracy difference is
+            # negligible but it's a straight multiplier on transcription
+            # time (beam search runs `beam_size` hypotheses in parallel).
             segments, info = self.whisper_model.transcribe(
-                audio_f32, beam_size=5, language=self.args.language
+                audio_f32, beam_size=1, language=self.args.language
             )
             text = "".join(seg.text for seg in segments).strip()
             transcribe_s = time.monotonic() - t0

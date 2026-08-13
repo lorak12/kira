@@ -3,3 +3,9 @@ faster-whisper>=1.0.3
 sounddevice>=0.5.1
 numpy>=1.26.4
 websockets>=13.1
+# GPU acceleration for faster-whisper (see _load_whisper_model in
+# audio_server.py) -- pip-redistributed CUDA/cuDNN runtime, no system-wide
+# CUDA Toolkit install needed. Falls back to CPU automatically if these
+# fail to load (no GPU, driver mismatch, etc.) -- not a hard requirement.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12==9.*

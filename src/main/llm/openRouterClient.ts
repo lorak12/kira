@@ -63,7 +63,16 @@ export class OpenRouterEngine implements LlmEngine {
       {
         model,
         messages: toOpenAiMessages(messages),
-        tools: tools.length ? toOpenAiTools(tools) : undefined
+        tools: tools.length ? toOpenAiTools(tools) : undefined,
+        // Without a cap, OpenRouter defaults max_tokens to the model's own
+        // ceiling (65536 for deepseek-v4-flash) and pre-checks account
+        // affordability against THAT number before generating anything --
+        // so a low-but-nonzero credit balance 402s on every call even
+        // though a spoken reply never comes close to using it. Kira's
+        // replies are a few sentences; 1024 tokens is generous headroom
+        // for that plus tool-call JSON, well under what even a modest
+        // balance can afford.
+        max_tokens: 1024
       },
       { signal }
     )

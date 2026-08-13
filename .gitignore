@@ -20,3 +20,7 @@ logs/
 # configs/*.yaml via livekit-wakeword) -- not source, don't belong in git
 data/
 output/
+
+# raw personal voice recordings used as STT/TTS bench source clips -- the
+# converted versions already live (gitignored) under scripts/stt-bench/clips/
+scripts/test*.mp3

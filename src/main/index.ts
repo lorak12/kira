@@ -43,6 +43,38 @@ interface AgentStepResult {
 }
 const SUPERSEDED: AgentStepResult = { reply: null, endSession: false }
 
+// Every console.log/console.error in the app (via logger.ts's log/logError,
+// plus sidecarClient.ts forwarding the Python sidecar's own stdout/stderr
+// through this process's own streams) ultimately calls process.stdout/
+// stderr.write(). Under the supervised background launch (run-kira.ps1),
+// that write goes over a real OS pipe to the supervisor script -- and if
+// that pipe's reader ever goes away (the hidden terminal was force-closed,
+// the supervisor script was killed, etc.), the next write throws EPIPE.
+// Writable streams emit 'error' for that rather than throwing synchronously,
+// but Node's default behavior for an 'error' event with no listener is to
+// throw anyway -- which showed up as Electron's "uncaught exception in main
+// process" dialog and left Kira running but non-functional. Attaching a
+// no-op listener here makes every write()-that-fails-because-nobody's-
+// listening a silent no-op instead, for every stream consumer in the app.
+process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code !== 'EPIPE') throw err
+})
+process.stderr.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code !== 'EPIPE') throw err
+})
+
+// Last-resort net: log (best-effort -- logError itself is now EPIPE-safe
+// per above) and keep running rather than let Electron's default handler
+// pop the "JavaScript error occurred in the main process" dialog, which
+// reads as Kira being frozen/dead to a voice-only user with no way to see
+// or dismiss it.
+process.on('uncaughtException', (err) => {
+  logError('[kira] uncaught exception (recovered)', err)
+})
+process.on('unhandledRejection', (reason) => {
+  logError('[kira] unhandled rejection (recovered)', reason)
+})
+
 // Kira now launches automatically at login (see scripts/run-kira.ps1) and a
 // user could also double-click a shortcut on top of that -- without a lock,
 // two instances would both open the mic/wake-word sidecar and fight over it.
@@ -214,6 +246,13 @@ app.whenReady().then(() => {
   // still letting a backgrounded tool's own promise run fully concurrently
   // with whatever turn comes next (it's not part of this chain at all).
   let turnChain: Promise<void> = Promise.resolve()
+  // Turn-latency instrumentation -- set when speech ends (mic capture done)
+  // and read back once a transcript arrives, so a slow turn's log shows
+  // exactly how long STT took vs. everything after it (LLM/tools/TTS below).
+  // There was no way to tell these apart before; "she's slow" could mean
+  // local Whisper, the LLM call, or synthesis, and the only way to find out
+  // used to be config to eyeball wall-clock. See handleTranscript/speak.
+  let speechEndedAt: number | null = null
 
   function serialize(fn: () => Promise<void>): void {
     turnChain = turnChain
@@ -284,9 +323,11 @@ app.whenReady().then(() => {
     // once the whole reply is done, cutting the dead-air gap before she
     // starts talking on anything longer than a one-liner.
     const chunks = splitForStreaming(text)
+    const ttsStartedAt = Date.now()
     try {
       for (let i = 0; i < chunks.length; i++) {
         const audioBuffer = await ttsEngine.synthesize(chunks[i], lang)
+        if (i === 0) log(`[kira] TTS first chunk took ${Date.now() - ttsStartedAt}ms`)
         if (!sessionGuard.isCurrent(gen)) return
         getOverlayWindow()?.webContents.send(IPC.PLAY_AUDIO, {
           audioBase64: audioBuffer.toString('base64'),
@@ -561,15 +602,33 @@ app.whenReady().then(() => {
     // thinking/running tools, not just once she's started talking. See
     // notifyBusy's doc comment.
     sidecar.notifyBusy(true)
+    const thinkingStartedAt = Date.now()
     try {
       const result = await runAgentStep(lang, gen)
+      log(`[kira] LLM/tools took ${Date.now() - thinkingStartedAt}ms`)
       await deliverReply(result, lang, gen)
     } catch (err) {
       logError('[kira] LLM call failed:', (err as Error).message)
-      sidecar.notifyBusy(false)
+      // Previously this just went straight to idle with no spoken reply --
+      // from a voice-only user's perspective that's indistinguishable from
+      // Kira being dead/frozen (this is exactly what an OpenRouter 402
+      // "out of credits" error looked like). A short apology at least says
+      // *something* went wrong instead of silence.
       if (sessionGuard.isCurrent(gen)) {
+        const text =
+          lang === 'pl'
+            ? 'Przepraszam, coś poszło nie tak po mojej stronie. Spróbuj jeszcze raz.'
+            : "Sorry, something went wrong on my end. Try again in a moment."
+        // speak() itself handles "busy" clearing via PLAYBACK_ENDED (or its
+        // own catch, if TTS synthesis also fails) -- same as the normal
+        // end_conversation path in deliverReply, resetSession() runs right
+        // after handing the audio off so sessionActive flips false before
+        // PLAYBACK_ENDED fires and this goes to idle rather than looping
+        // back to listening.
+        await speak(text, lang, gen)
         resetSession()
-        setState('idle')
+      } else {
+        sidecar.notifyBusy(false)
       }
     }
   }
@@ -690,10 +749,15 @@ app.whenReady().then(() => {
 
   sidecar.on('speechEnd', () => {
     log('[kira] speech ended, transcribing...')
+    speechEndedAt = Date.now()
     setState('transcribing')
   })
 
   sidecar.on('transcript', ({ text, lang }) => {
+    if (speechEndedAt !== null) {
+      log(`[kira] local STT took ${Date.now() - speechEndedAt}ms`)
+      speechEndedAt = null
+    }
     // Serialized against other turns/announcements -- see turnChain --
     // rather than fired directly, so it can't interleave with a proactive
     // background-task announcement that's already mid-flight.
@@ -716,9 +780,11 @@ app.whenReady().then(() => {
     // -- otherwise a new wake mid-transcription would make this stale
     // utterance's text get fed into the *new* session as if freshly said.
     const gen = sessionGuard.current()
+    const sttStartedAt = Date.now()
     try {
       const wavBuffer = Buffer.from(audioBase64, 'base64')
       const { text, lang } = await sttEngine.transcribe(wavBuffer)
+      log(`[kira] Groq STT took ${Date.now() - sttStartedAt}ms`)
       if (!sessionGuard.isCurrent(gen)) {
         log('[kira] dropping Groq transcript that arrived after its session was superseded')
         return

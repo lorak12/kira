@@ -1,0 +1,6 @@
+.env
+outputs/*.mp3
+outputs/*.wav
+results/report.html
+!outputs/.gitkeep
+!results/.gitkeep
