@@ -16,6 +16,11 @@ import { trimHistory, truncateForHistory } from './llm/historyManagement'
 import { BackgroundTaskManager } from './llm/backgroundTasks'
 import { splitForStreaming } from './llm/sentenceSplit'
 import { buildRecentNotesContext } from './tools/notes'
+import { buildMemoryContext } from './memory/retrieval'
+import { appendUsageEvent, categoryForTool } from './memory/usageStats'
+import { runSessionJudgeAndPersist } from './memory/sessionJudge'
+import { runPatternReflection } from './memory/patternReflection'
+import { loadReflectionState, saveReflectionState } from './memory/reflectionState'
 import { restoreTimers } from './tools/timers'
 import { initSystemWatch } from './tools/systemWatch'
 import { registerHotkeys, unregisterHotkeys } from './hotkeys/globalHotkeys'
@@ -229,6 +234,12 @@ app.whenReady().then(() => {
   // queued and the LLM naturally re-prompts for it next turn (its "not
   // executed yet" tool message is still sitting in history).
   let pendingConfirmations: ToolCall[] = []
+  // Tool calls made this session, coarse-categorized -- fed to the
+  // end-of-session judge (see memory/sessionJudge.ts) alongside the
+  // transcript, so it can tell "purely trivial device control" sessions
+  // apart from ones worth persisting. Cleared with the rest of session
+  // state in resetSession().
+  let sessionToolCalls: { name: string; category: string }[] = []
   // See sessionGuard.ts: the sidecar can detect a new wake word while a
   // previous turn is still awaiting the LLM/a tool, so every in-flight async
   // turn must be able to notice it's been superseded and stop touching
@@ -267,6 +278,46 @@ app.whenReady().then(() => {
     sessionActive = false
     history = []
     pendingConfirmations = []
+    sessionToolCalls = []
+  }
+
+  // Snapshots the session before resetSession() clears it, then -- if memory
+  // is enabled and the session had enough content to bother with -- fires
+  // the end-of-session judge pass (memory/sessionJudge.ts) fire-and-forget.
+  // Only called from the two "session genuinely ended" points (a farewell
+  // via end_conversation, and trailing silence) -- NOT from the LLM-call-
+  // failed error path, where there's nothing meaningful to judge.
+  function endSessionAndMaybeJudge(): void {
+    const historySnapshot = [...history]
+    const toolCallLog = [...sessionToolCalls]
+    resetSession()
+    if (!config.memory.enabled) return
+    if (historySnapshot.length >= config.memory.minSessionMessagesToJudge) {
+      void runSessionJudgeAndPersist(llmEngine, historySnapshot, toolCallLog).catch((err) =>
+        logError('[kira] session judge failed:', (err as Error).message)
+      )
+    }
+    void maybeRunPatternReflection()
+  }
+
+  // Runs the pattern-reflection pass (memory/patternReflection.ts) every
+  // config.memory.reflectionIntervalSessions ended sessions -- tracked via a
+  // small persisted counter (memory/reflectionState.ts) rather than a
+  // calendar-day timer, so it's self-limiting to actual usage and needs no
+  // background alarm the app doesn't otherwise have.
+  async function maybeRunPatternReflection(): Promise<void> {
+    try {
+      const state = await loadReflectionState()
+      const count = state.sessionsSinceReflection + 1
+      if (count >= config.memory.reflectionIntervalSessions) {
+        await saveReflectionState({ sessionsSinceReflection: 0 })
+        await runPatternReflection(llmEngine)
+      } else {
+        await saveReflectionState({ sessionsSinceReflection: count })
+      }
+    } catch (err) {
+      logError('[kira] pattern reflection failed:', (err as Error).message)
+    }
   }
 
   // Shared by the mute keyword, mute hotkey, and barge-in: stop whatever's
@@ -457,6 +508,15 @@ app.whenReady().then(() => {
       }
 
       log(`[kira] tool call: ${call.name}(${JSON.stringify(call.arguments)})`)
+      // Best-effort side channel, same treatment as emitActivity -- never
+      // gates the turn. Recorded as soon as the tool is dispatched (not
+      // once it resolves) since what matters for usage patterns is that it
+      // was called, not its outcome or duration.
+      const usageCategory = categoryForTool(call.name)
+      sessionToolCalls.push({ name: call.name, category: usageCategory })
+      if (config.memory.enabled) {
+        void appendUsageEvent({ ts: new Date().toISOString(), toolName: call.name, category: usageCategory }).catch(() => {})
+      }
       const controller = new AbortController()
       const execPromise = tool
         ? tool.execute(call.arguments, controller.signal).catch((err: Error) => `Error: ${err.message}`)
@@ -568,7 +628,7 @@ app.whenReady().then(() => {
       // resolves once PLAY_AUDIO is sent, not once playback finishes), so
       // sessionActive flips to false before IPC.PLAYBACK_ENDED fires and it
       // naturally goes to 'idle' instead of looping back to 'listening'.
-      resetSession()
+      endSessionAndMaybeJudge()
     }
   }
 
@@ -585,7 +645,7 @@ app.whenReady().then(() => {
       // Silence (or an empty/hallucinated transcript) ends the session --
       // this is what makes "listen again" not listen forever.
       if (sessionGuard.isCurrent(gen)) {
-        resetSession()
+        endSessionAndMaybeJudge()
         setState('idle')
       }
       return
@@ -729,6 +789,15 @@ app.whenReady().then(() => {
     void buildRecentNotesContext().then((context) => {
       if (context && sessionGuard.isCurrent(gen)) history.push({ role: 'system', content: context })
     })
+    // Curated cross-session memory (see memory/store.ts) -- kept as its own
+    // system message alongside notes rather than merged with it, since the
+    // two serve different purposes (explicit verbatim notes vs. LLM-curated
+    // durable facts/patterns).
+    if (config.memory.enabled) {
+      void buildMemoryContext().then((context) => {
+        if (context && sessionGuard.isCurrent(gen)) history.push({ role: 'system', content: context })
+      })
+    }
   })
 
   sidecar.on('mute', () => {

@@ -55,6 +55,20 @@ export default function App(): JSX.Element {
     }
   }, [state])
 
+  // The orb hit-region stays mounted through the fade-out transition (so the
+  // orb can animate away), but once it's actually invisible it must stop
+  // accepting mouse input -- otherwise its 340px hot zone, centered on the
+  // primary display, sits directly over a game's crosshair and silently
+  // flips the whole desktop-spanning overlay out of click-through the
+  // instant the cursor passes through screen center. Force a reset here
+  // rather than relying on onMouseLeave, since the cursor may already be
+  // sitting inside the region when it fades out (no leave event fires).
+  useEffect(() => {
+    if (!visible) {
+      window.kira.setIgnoreMouse(true)
+    }
+  }, [visible])
+
   // Union bounds define this window's own coordinate origin — offset each
   // display's absolute desktop bounds into window-local coordinates.
   const originX = displays.length ? Math.min(...displays.map((d) => d.x)) : 0
@@ -118,8 +132,12 @@ export default function App(): JSX.Element {
             ref={orbHitRef}
             className="orb-hit-region"
             data-state={state}
-            style={{ left: orbCenter.left, top: orbCenter.top }}
-            onMouseEnter={() => window.kira.setIgnoreMouse(false)}
+            style={{
+              left: orbCenter.left,
+              top: orbCenter.top,
+              pointerEvents: visible ? 'auto' : 'none'
+            }}
+            onMouseEnter={() => visible && window.kira.setIgnoreMouse(false)}
             onMouseLeave={() => window.kira.setIgnoreMouse(true)}
           >
             <div

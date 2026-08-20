@@ -12,7 +12,16 @@ export const configSchema = z.object({
     // Port for the local WebSocket the Python audio sidecar exposes to the
     // Electron main process (wake-word detection + STT run in that process).
     port: z.number().default(8765),
-    pythonPath: z.string().default('python')
+    pythonPath: z.string().default('python'),
+    // Case-insensitive substring match against sounddevice's input device
+    // names (audio_server.py --input-device) -- pins the mic explicitly
+    // instead of relying on whatever Windows' default input device happens
+    // to be, which other apps (games, other audio software) can silently
+    // change out from under Kira. Leave unset to keep using the system
+    // default. When multiple devices match (e.g. the same physical/virtual
+    // mic exposed through MME/DirectSound/WASAPI/WDM-KS), the sidecar
+    // prefers the WASAPI one for lower latency.
+    inputDevice: z.string().optional()
   }),
   // Real barge-in -- interrupting Kira by just talking over her, rather than
   // needing the mute keyword/hotkey or a fresh wake word. Off by default:
@@ -174,7 +183,61 @@ export const configSchema = z.object({
         editorCommand: z.string().default('code')
       })
     )
-    .default([])
+    .default([]),
+  // Google account integration (Calendar/Gmail/Drive/Docs/Sheets/Slides) --
+  // see google/authManager.ts. clientId/clientSecret come from a Google
+  // Cloud "Desktop app" OAuth client you create yourself; leaving them unset
+  // just means link_google_account will fail with a clear message, nothing
+  // else breaks. enabledServices controls which tool sets registry.ts
+  // registers -- only enable what you actually granted scopes for during
+  // the consent flow (re-run link_google_account after adding a service).
+  google: z
+    .object({
+      clientId: z.string().optional(),
+      clientSecret: z.string().optional(),
+      enabledServices: z.array(z.enum(['calendar', 'gmail', 'drive', 'docs', 'sheets', 'slides'])).default([])
+    })
+    .default({ enabledServices: [] }),
+  // Google Maps Directions API key for get_directions -- unset just omits
+  // that tool from the registry (see tools/registry.ts).
+  maps: z
+    .object({
+      apiKey: z.string().optional()
+    })
+    .default({}),
+  // Structured cross-session memory -- see memory/store.ts and
+  // llm/personaPrompt.ts's remember_fact guidance.
+  memory: z
+    .object({
+      enabled: z.boolean().default(true),
+      // Cheap/fast model for the session-judge and pattern-reflection LLM
+      // calls (see memory/sessionJudge.ts, memory/patternReflection.ts) --
+      // defaults to llm.fallbackModel so most installs need zero extra
+      // config.
+      judgeModel: z.string().optional(),
+      // Below this many messages, a session is judged too short to bother
+      // spending an extra LLM call on -- skipped before judgeSession() ever
+      // runs.
+      minSessionMessagesToJudge: z.number().int().min(1).default(4),
+      // Run the pattern-reflection pass every N judged sessions.
+      reflectionIntervalSessions: z.number().int().min(1).default(10),
+      // How long an entry can go unreinforced before pruneStale() drops it,
+      // per category -- projects churn fastest, facts are the most durable.
+      maxAgeDays: z
+        .object({
+          project: z.number().int().min(1).default(30),
+          pattern: z.number().int().min(1).default(60),
+          preference: z.number().int().min(1).default(180),
+          fact: z.number().int().min(1).default(365)
+        })
+        .default({ project: 30, pattern: 60, preference: 180, fact: 365 })
+    })
+    .default({
+      enabled: true,
+      minSessionMessagesToJudge: 4,
+      reflectionIntervalSessions: 10,
+      maxAgeDays: { project: 30, pattern: 60, preference: 180, fact: 365 }
+    })
 })
 
 export type KiraConfig = z.infer<typeof configSchema>

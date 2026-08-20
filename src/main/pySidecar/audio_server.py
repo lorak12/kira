@@ -10,6 +10,7 @@ WebSocket as newline-delimited JSON messages.
 
 Usage:
   python audio_server.py --port 8765 --ww-model path/to/kira.onnx
+    [--input-device "name substring"]
     [--mute-model path/to/mute.onnx] [--threshold 0.5]
     [--stt-engine local|groq] [--whisper-model-size small]
     [--barge-in] [--barge-in-rms-threshold 1200] [--barge-in-min-speech-ms 400]
@@ -33,6 +34,16 @@ CHUNK_SAMPLES = 1280  # 80ms @ 16kHz, openWakeWord's expected chunk size
 SILENCE_RMS_THRESHOLD = 300  # int16 RMS; tune per mic if VAD is too eager/lazy
 SILENCE_HANG_MS = 800
 MAX_UTTERANCE_MS = 15000
+# An utterance only counts as "real speech" once accumulated above-threshold
+# audio reaches this much -- a single loud 80ms chunk (a click, a word of
+# background chatter bleeding in from headphones, etc.) used to be enough to
+# flip heard_speech straight to True, which both cut utterances short on
+# noise and, worse, sent that noise off to be transcribed at all. Whisper
+# models (local or Groq's) reliably hallucinate plausible-sounding text from
+# noise/near-silence, which is what was showing up as Kira replying to
+# nothing. Same gap-tolerant accumulation style as barge-in below.
+MIN_SPEECH_MS = 300
+SPEECH_GAP_TOLERANCE_MS = 150
 # Ordinary speech has brief energy dips between syllables/words (well under
 # this) that shouldn't reset a barge-in detection in progress -- only a gap
 # at least this long counts as the user having actually stopped/not started.
@@ -88,6 +99,8 @@ class AudioSidecar:
         self.silence_chunks = 0
         self.total_utterance_chunks = 0
         self.heard_speech = False
+        self.speech_ms = 0.0
+        self.speech_gap_chunks = 0
         self.armed_at: float | None = None
 
         # Barge-in (see config.bargeIn / TODO-barge-in.md): Electron tells us
@@ -140,16 +153,62 @@ class AudioSidecar:
         mono = indata[:, 0].copy()
         self.loop.call_soon_threadsafe(self.audio_queue.put_nowait, mono)
 
+    def _input_device_candidates(self):
+        # Pins the mic by name (config.sidecar.inputDevice) instead of
+        # trusting Windows' current default input device, which other apps
+        # can silently change. Devices are commonly duplicated across host
+        # APIs (MME/DirectSound/WASAPI/WDM-KS) under the same name --
+        # WASAPI is usually lowest-latency, but virtual audio devices (like
+        # SteelSeries Sonar's) sometimes reject the 16kHz we need on their
+        # WASAPI entry specifically while MME/DirectSound accept it fine, so
+        # this doesn't trust a hostapi ranking -- audio_loop actually tries
+        # opening each candidate in order and falls back on failure instead.
+        # None (PortAudio's own default-device resolution) is always the
+        # last resort, since on this same setup it's been observed to
+        # resolve to a *different*, non-working device than what
+        # sd.query_devices() reports as the default index.
+        if not self.args.input_device:
+            return [None]
+
+        wanted = self.args.input_device.lower()
+        hostapis = sd.query_hostapis()
+        matches = [
+            (i, d) for i, d in enumerate(sd.query_devices())
+            if d["max_input_channels"] > 0 and wanted in d["name"].lower()
+        ]
+        if not matches:
+            log(f"WARNING: no input device matches {self.args.input_device!r}, falling back to system default")
+            return [None]
+
+        matches.sort(key=lambda pair: hostapis[pair[1]["hostapi"]]["name"] != "Windows WASAPI")
+        for i, d in matches:
+            log(f"input device candidate: {d['name']!r} (index={i}, hostapi={hostapis[d['hostapi']]['name']})")
+        return [i for i, _ in matches] + [None]
+
+    def _open_input_stream(self):
+        last_err = None
+        for device in self._input_device_candidates():
+            try:
+                stream = sd.InputStream(
+                    samplerate=SAMPLE_RATE,
+                    channels=1,
+                    dtype="int16",
+                    blocksize=CHUNK_SAMPLES,
+                    device=device,
+                    callback=self._on_audio_block,
+                )
+                label = sd.query_devices(device)["name"] if device is not None else "system default"
+                log(f"opened input device: {label!r}")
+                return stream
+            except Exception as e:
+                log(f"failed to open input device {device!r}: {e}")
+                last_err = e
+        raise last_err or RuntimeError("no input device available")
+
     async def audio_loop(self):
         self.loop = asyncio.get_running_loop()
         self.audio_queue = asyncio.Queue()
-        stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=1,
-            dtype="int16",
-            blocksize=CHUNK_SAMPLES,
-            callback=self._on_audio_block,
-        )
+        stream = self._open_input_stream()
         with stream:
             log("microphone stream started")
             while True:
@@ -234,19 +293,31 @@ class AudioSidecar:
         self.silence_chunks = 0
         self.total_utterance_chunks = 0
         self.heard_speech = False
+        self.speech_ms = 0.0
+        self.speech_gap_chunks = 0
 
     async def _accumulate_utterance(self, chunk: np.ndarray):
         self.utterance_frames.append(chunk)
         self.total_utterance_chunks += 1
 
         rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
-        if rms < SILENCE_RMS_THRESHOLD:
-            self.silence_chunks += 1
-        else:
-            self.silence_chunks = 0
-            self.heard_speech = True
-
         chunk_ms = 1000 * CHUNK_SAMPLES / SAMPLE_RATE
+
+        if rms >= SILENCE_RMS_THRESHOLD:
+            self.silence_chunks = 0
+            self.speech_ms += chunk_ms
+            self.speech_gap_chunks = 0
+            if not self.heard_speech and self.speech_ms >= MIN_SPEECH_MS:
+                self.heard_speech = True
+        else:
+            self.silence_chunks += 1
+            self.speech_gap_chunks += 1
+            # A brief dip (between syllables/words) doesn't reset progress
+            # toward MIN_SPEECH_MS -- only a real gap does, same tolerance
+            # idea as barge-in above.
+            if self.speech_gap_chunks * chunk_ms >= SPEECH_GAP_TOLERANCE_MS:
+                self.speech_ms = 0.0
+
         silence_ms = self.silence_chunks * chunk_ms
         elapsed_ms = self.total_utterance_chunks * chunk_ms
 
@@ -254,8 +325,9 @@ class AudioSidecar:
         # sentence) looks identical to trailing silence -- only start the
         # "end of utterance" silence countdown once real speech has actually
         # been heard, so that pause doesn't cut the utterance off before it
-        # begins. elapsed_ms is a hard cap regardless, so silent sessions
-        # still terminate instead of listening forever.
+        # begins. elapsed_ms is a hard cap regardless, so silent/noisy
+        # sessions that never reach MIN_SPEECH_MS still terminate instead of
+        # listening forever.
         if (self.heard_speech and silence_ms >= SILENCE_HANG_MS) or elapsed_ms >= MAX_UTTERANCE_MS:
             await self._finish_utterance()
 
@@ -265,6 +337,20 @@ class AudioSidecar:
 
         pcm = np.concatenate(self.utterance_frames) if self.utterance_frames else np.array([], dtype=np.int16)
         self.utterance_frames = []
+
+        if not self.heard_speech:
+            # Never accumulated MIN_SPEECH_MS of sustained above-threshold
+            # audio -- almost certainly a false wake-word trigger or stray
+            # noise, not an actual command. Skip STT entirely (local model or
+            # Groq's API) rather than transcribing noise and risking a
+            # hallucinated reply; report an empty transcript, which Electron
+            # already treats as "nothing said" and quietly ends the session
+            # (see handleTranscript's empty-text branch in index.ts).
+            log(f"discarding utterance: no sustained speech detected ({len(pcm) / SAMPLE_RATE:.1f}s captured, not sent to STT)")
+            await self._broadcast({"type": "transcript", "text": "", "lang": self.args.language or "unknown"})
+            self.state = "idle"
+            self.heard_speech = False
+            return
 
         if self.whisper_model is not None:
             audio_f32 = pcm.astype(np.float32) / 32768.0
@@ -311,6 +397,8 @@ class AudioSidecar:
         self.silence_chunks = 0
         self.total_utterance_chunks = 0
         self.heard_speech = False
+        self.speech_ms = 0.0
+        self.speech_gap_chunks = 0
         self.ww_model.reset()
 
     # -- websocket server ----------------------------------------------
@@ -374,6 +462,7 @@ def _model_key(model_path: str) -> str:
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--input-device", default=None)
     p.add_argument("--ww-model", required=True)
     p.add_argument("--mute-model", default=None)
     p.add_argument("--threshold", type=float, default=0.5)

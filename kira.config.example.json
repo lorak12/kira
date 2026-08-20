@@ -6,7 +6,8 @@
   },
   "sidecar": {
     "port": 8765,
-    "pythonPath": "python"
+    "pythonPath": "python",
+    "inputDevice": "SteelSeries Sonar - Microphone"
   },
   "bargeIn": {
     "enabled": false,
@@ -81,5 +82,24 @@
       "path": "C:/path/to/your/project",
       "editorCommand": "code"
     }
-  ]
+  ],
+  "google": {
+    "clientId": "YOUR_GOOGLE_OAUTH_CLIENT_ID",
+    "clientSecret": "YOUR_GOOGLE_OAUTH_CLIENT_SECRET",
+    "enabledServices": ["calendar"]
+  },
+  "maps": {
+    "apiKey": "YOUR_GOOGLE_MAPS_API_KEY"
+  },
+  "memory": {
+    "enabled": true,
+    "minSessionMessagesToJudge": 4,
+    "reflectionIntervalSessions": 10,
+    "maxAgeDays": {
+      "project": 30,
+      "pattern": 60,
+      "preference": 180,
+      "fact": 365
+    }
+  }
 }

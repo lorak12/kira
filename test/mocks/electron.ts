@@ -77,6 +77,12 @@ export class BrowserWindow {
   constructor(_options?: Record<string, unknown>) {}
 }
 
+export const safeStorage = {
+  isEncryptionAvailable: vi.fn(() => true),
+  encryptString: vi.fn((s: string) => Buffer.from(s, 'utf-8')),
+  decryptString: vi.fn((b: Buffer) => b.toString('utf-8'))
+}
+
 export const globalShortcut = {
   register: vi.fn(() => true),
   unregister: vi.fn(),

@@ -28,6 +28,16 @@ import { readWebpageTool } from './webRead'
 import { readFileTool } from './readFile'
 import { watchSystemMetricTool, listWatchesTool, cancelWatchTool } from './systemWatch'
 import { hideOverlayTool, showOverlayTool } from './overlayControl'
+import { createGoogleAuthManager } from '../google/authManager'
+import { createLinkGoogleAccountTool, createUnlinkGoogleAccountTool } from './googleAuth'
+import { createGoogleCalendarTools } from './googleCalendar'
+import { createGoogleGmailTools } from './googleGmail'
+import { createGoogleDriveTools } from './googleDrive'
+import { createGoogleDocsTools } from './googleDocs'
+import { createGoogleSheetsTools } from './googleSheets'
+import { createGoogleSlidesTools } from './googleSlides'
+import { createDirectionsTool } from './maps'
+import { rememberFactTool } from './memory'
 
 export interface ToolRegistry {
   getToolSchemas(): ToolSchema[]
@@ -41,6 +51,12 @@ export interface ToolRegistry {
  * tool without it ever being reachable in a normal run.
  */
 export function createToolRegistry(config: KiraConfig, extraTools: ToolDefinition[] = []): ToolRegistry {
+  // One shared auth manager (in-memory token cache) for every Google tool
+  // constructed below -- see google/authManager.ts. Constructing it here
+  // rather than threading it in from index.ts keeps tool-list assembly
+  // self-contained from config alone, same as createOpenProjectTool(config).
+  const googleAuth = createGoogleAuthManager(config)
+
   const allTools: ToolDefinition[] = [
     openAppTool,
     openUrlTool,
@@ -86,6 +102,16 @@ export function createToolRegistry(config: KiraConfig, extraTools: ToolDefinitio
     cancelWatchTool,
     hideOverlayTool,
     showOverlayTool,
+    createLinkGoogleAccountTool(googleAuth),
+    createUnlinkGoogleAccountTool(googleAuth),
+    ...(config.google.enabledServices.includes('calendar') ? createGoogleCalendarTools(googleAuth) : []),
+    ...(config.google.enabledServices.includes('gmail') ? createGoogleGmailTools(googleAuth) : []),
+    ...(config.google.enabledServices.includes('drive') ? createGoogleDriveTools(googleAuth) : []),
+    ...(config.google.enabledServices.includes('docs') ? createGoogleDocsTools(googleAuth) : []),
+    ...(config.google.enabledServices.includes('sheets') ? createGoogleSheetsTools(googleAuth) : []),
+    ...(config.google.enabledServices.includes('slides') ? createGoogleSlidesTools(googleAuth) : []),
+    ...(config.maps.apiKey ? [createDirectionsTool(config)] : []),
+    ...(config.memory.enabled ? [rememberFactTool] : []),
     ...extraTools
   ]
 

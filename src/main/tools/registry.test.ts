@@ -7,6 +7,9 @@ function configWith(overrides: Record<string, unknown> = {}): KiraConfig {
     projects: [],
     tools: { disabled: [] },
     assistant: { alwaysConfirm: false },
+    google: { enabledServices: [] },
+    maps: {},
+    memory: { enabled: true },
     ...overrides
   } as unknown as KiraConfig
 }
@@ -67,5 +70,48 @@ describe('createToolRegistry', () => {
     const registry = createToolRegistry(configWith({ assistant: { alwaysConfirm: true } }))
     expect(registry.getTool('no_reply')).toBeUndefined()
     expect(registry.getToolSchemas().map((s) => s.name)).not.toContain('no_reply')
+  })
+
+  it('always registers link_google_account/unlink_google_account, regardless of enabledServices', () => {
+    const registry = createToolRegistry(configWith())
+    expect(registry.getTool('link_google_account')).toBeDefined()
+    expect(registry.getTool('unlink_google_account')).toBeDefined()
+  })
+
+  it('omits calendar tools when google.enabledServices does not include calendar', () => {
+    const registry = createToolRegistry(configWith({ google: { enabledServices: [] } }))
+    expect(registry.getTool('list_calendar_events')).toBeUndefined()
+    expect(registry.getTool('create_calendar_event')).toBeUndefined()
+  })
+
+  it('registers calendar tools when google.enabledServices includes calendar', () => {
+    const registry = createToolRegistry(configWith({ google: { enabledServices: ['calendar'] } }))
+    expect(registry.getTool('list_calendar_events')).toBeDefined()
+    expect(registry.getTool('create_calendar_event')).toBeDefined()
+    expect(registry.getTool('update_calendar_event')).toBeDefined()
+    expect(registry.getTool('delete_calendar_event')).toBeDefined()
+  })
+
+  it('gates each remaining Google service tool set on its own enabledServices entry', () => {
+    const registry = createToolRegistry(
+      configWith({ google: { enabledServices: ['gmail', 'drive', 'docs', 'sheets', 'slides'] } })
+    )
+    for (const name of ['search_emails', 'get_email', 'send_email']) expect(registry.getTool(name)).toBeDefined()
+    for (const name of ['search_drive_files', 'get_drive_file_link']) expect(registry.getTool(name)).toBeDefined()
+    for (const name of ['read_google_doc', 'create_google_doc']) expect(registry.getTool(name)).toBeDefined()
+    for (const name of ['read_sheet_range', 'append_sheet_row']) expect(registry.getTool(name)).toBeDefined()
+    for (const name of ['read_slides_outline', 'create_slide']) expect(registry.getTool(name)).toBeDefined()
+    // calendar wasn't enabled -- its tools should be absent even though other services are on.
+    expect(registry.getTool('list_calendar_events')).toBeUndefined()
+  })
+
+  it('omits get_directions when maps.apiKey is unset, registers it when set', () => {
+    expect(createToolRegistry(configWith({ maps: {} })).getTool('get_directions')).toBeUndefined()
+    expect(createToolRegistry(configWith({ maps: { apiKey: 'key' } })).getTool('get_directions')).toBeDefined()
+  })
+
+  it('registers remember_fact by default, omits it when memory.enabled is false', () => {
+    expect(createToolRegistry(configWith()).getTool('remember_fact')).toBeDefined()
+    expect(createToolRegistry(configWith({ memory: { enabled: false } })).getTool('remember_fact')).toBeUndefined()
   })
 })

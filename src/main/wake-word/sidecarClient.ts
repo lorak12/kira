@@ -57,6 +57,9 @@ export class SidecarClient extends EventEmitter {
       '--whisper-model-size',
       this.config.stt.localWhisper.modelSize
     ]
+    if (this.config.sidecar.inputDevice) {
+      args.push('--input-device', this.config.sidecar.inputDevice)
+    }
     if (this.config.stt.language) {
       args.push('--language', this.config.stt.language)
     }

@@ -3,6 +3,7 @@ out/
 dist/
 build/
 kira.config.json
+kira.persona.md
 .env
 resources/models/*.ppn
 *.log
